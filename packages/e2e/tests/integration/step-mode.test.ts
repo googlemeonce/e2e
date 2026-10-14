@@ -128,6 +128,19 @@ test('${name}', async ({ app }) => {
     expect(resultByTitle(result.outcome, 'outlasts its own timeout while a step is held').status).toBe('passed');
   }, 120_000);
 
+  it('ignores a run-level time limit while stepping, so a long read does not end the session', async () => {
+    const result = await stepped(
+      (runOptions) =>
+        runProjectWithConfigFile(FILES, { configSource: workerFakeConfigSource(1), runOptions: { ...runOptions, maxDuration: 150 } }),
+      'c',
+      500,
+    );
+    project = result.project;
+    expect(result.outcome.exitCode).toBe(0);
+    expect(result.outcome.results.map((entry) => entry.status)).toEqual(['passed', 'passed']);
+    expect(result.outcome.report.run.errors).toEqual([]);
+  }, 120_000);
+
   it('runs the rest without stopping after r', async () => {
     const result = await stepped(
       (runOptions) => runProjectWithConfigFile(FILES, { configSource: workerFakeConfigSource(1), runOptions }),
@@ -149,6 +162,44 @@ test('${name}', async ({ app }) => {
     expect(result.outcome.exitCode).toBe(130);
     expect(resultByTitle(result.outcome, 'walks two steps').status).toBe('interrupted');
     expect(resultByTitle(result.outcome, 'outlasts its own timeout while a step is held').status).toBe('skipped');
+  }, 120_000);
+
+  it('prints the prompt itself when no list reporter would, so a held step is never invisible', async () => {
+    const written: string[] = [];
+    const original = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      written.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+    let result: Stepped;
+    try {
+      result = await stepped(
+        (runOptions) => runProject(FILES, { runOptions: { ...runOptions, quiet: false, reporters: ['markdown'] } }),
+        'c',
+      );
+    } finally {
+      process.stderr.write = original;
+    }
+    project = result.project;
+    expect(result.outcome.exitCode).toBe(0);
+    expect(written.join('')).toMatch(/step 2: app\.open \/ {2}\(tests\/step\.e2e\.ts:\d+\)\n {2}c runs it · t finishes this test/u);
+  }, 120_000);
+
+  it('stays silent on stderr when the host asked for a quiet run', async () => {
+    const written: string[] = [];
+    const original = process.stderr.write.bind(process.stderr);
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      written.push(String(chunk));
+      return true;
+    }) as typeof process.stderr.write;
+    let result: Stepped;
+    try {
+      result = await stepped((runOptions) => runProject(FILES, { runOptions }), 'c');
+    } finally {
+      process.stderr.write = original;
+    }
+    project = result.project;
+    expect(written.join('')).not.toContain('c runs it');
   }, 120_000);
 
   it('works in-process too', async () => {

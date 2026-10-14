@@ -591,7 +591,7 @@ function createProgram(version: string, telemetry: Telemetry): Command {
     .optionsGroup('Execution:')
     .option('--headed', 'show the UI while tests run, when the engine supports it')
     .option('--step', 'run the first step, then hold each later step until c is pressed (r runs the rest, q stops); a terminal, one worker')
-    .option('--inspect', 'step through the run from a inspector beside the browser: the test file, the line about to run, and buttons (implies --step and --headed)')
+    .option('--inspect', 'step through the run from an inspector page beside the app: the test file, the line about to run, and buttons (implies --step and --headed)')
     .option(
       '--agent <names>',
       'the configured agent unpinned tests run with (default: agents.default); comma-separated or repeated names run each such test once per agent',
@@ -705,7 +705,7 @@ function createProgram(version: string, telemetry: Telemetry): Command {
         if (options.watch === true) rejectWatchIn(command, options.reporter);
         if (options.step === true || options.inspect === true) rejectStepIn(command, options);
         if (options.inspect === true) {
-          // The inspector is the way to step through a run: it needs a visible browser beside it.
+          // The inspector is the way to step through a run: it needs a visible app window beside it.
           runOptions.step = true;
           runOptions.inspect = true;
           runOptions.headed = true;

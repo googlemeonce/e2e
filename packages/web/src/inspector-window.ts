@@ -7,13 +7,16 @@
  *
  * A Wayland session ignores the position a program asks for, so there Chromium
  * is started through XWayland (`--ozone-platform=x11`), where it is honoured.
+ *
+ * The window is launched through Playwright, which talks to it over a pipe:
+ * it opens no network port, and it ends with the worker that opened it even
+ * when the worker is killed.
  */
 
-import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { chromium } from 'playwright-core';
+import { chromium, type BrowserContext } from 'playwright-core';
 
 export interface InspectorWindow {
   /** Launch flags that put the browser under test on the right half of the screen. */
@@ -60,22 +63,6 @@ export function windowArgs(area: ScreenArea): string[] {
   return [`--window-position=${area.left},${area.top}`, `--window-size=${area.width},${area.height}`];
 }
 
-/** The DevTools port a Chromium started with `--remote-debugging-port=0` chose, once it has written it. */
-async function devToolsPort(profile: string, child: ChildProcess, signal: AbortSignal): Promise<number> {
-  const file = path.join(profile, 'DevToolsActivePort');
-  const deadline = Date.now() + WINDOW_TIMEOUT_MS;
-  while (Date.now() < deadline) {
-    if (signal.aborted) throw new Error('cancelled');
-    if (child.exitCode !== null) throw new Error(`the window exited with code ${String(child.exitCode)}`);
-    if (existsSync(file)) {
-      const port = Number(readFileSync(file, 'utf8').split('\n')[0]);
-      if (Number.isInteger(port) && port > 0) return port;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-  throw new Error('the window did not come up');
-}
-
 /**
  * Opens the inspector in a window on the left half of the screen, or
  * resolves undefined, with a line saying why, when it cannot: no display, no
@@ -85,55 +72,37 @@ async function devToolsPort(profile: string, child: ChildProcess, signal: AbortS
 export async function openInspectorWindow(url: string, context: InspectorWindowContext): Promise<InspectorWindow | undefined> {
   const profile = mkdtempSync(path.join(tmpdir(), 'e2e-inspector-'));
   const display = displayArgs(process.env);
-  let child: ChildProcess | undefined;
+  let appWindow: BrowserContext | undefined;
   const close = async (): Promise<void> => {
-    const running = child;
-    child = undefined;
-    if (running !== undefined && running.exitCode === null) {
-      const exited = new Promise<void>((resolve) => running.once('exit', () => resolve()));
-      running.kill('SIGTERM');
-      await Promise.race([exited, new Promise((resolve) => setTimeout(resolve, 3000))]);
-      if (running.exitCode === null) running.kill('SIGKILL');
-    }
+    const open = appWindow;
+    appWindow = undefined;
+    await open?.close().catch(() => undefined);
     rmSync(profile, { recursive: true, force: true });
   };
   try {
-    child = spawn(
-      chromium.executablePath(),
-      [
-        `--app=${url}`,
-        `--user-data-dir=${profile}`,
-        '--remote-debugging-port=0',
-        '--no-first-run',
-        '--no-default-browser-check',
-        '--window-size=800,800',
-        ...display,
-      ],
-      { stdio: 'ignore' },
-    );
-    const spawned = child;
-    const failed = new Promise<never>((_, reject) => spawned.once('error', reject));
-    const port = await Promise.race([devToolsPort(profile, spawned, context.signal), failed]);
-    const browser = await chromium.connectOverCDP(`http://127.0.0.1:${String(port)}`, { timeout: WINDOW_TIMEOUT_MS });
-    try {
-      const pageContext = browser.contexts()[0];
-      const page = pageContext?.pages()[0];
-      if (pageContext === undefined || page === undefined) throw new Error('the window has no page');
-      const area = await page.evaluate(() => {
-        const s = window.screen as Screen & { availLeft?: number; availTop?: number };
-        return { left: s.availLeft ?? 0, top: s.availTop ?? 0, width: s.availWidth, height: s.availHeight };
-      });
-      const { control, browser: right } = halves(area);
-      const session = await pageContext.newCDPSession(page);
-      const { windowId } = await session.send('Browser.getWindowForTarget');
-      await session.send('Browser.setWindowBounds', {
-        windowId,
-        bounds: { left: control.left, top: control.top, width: control.width, height: control.height, windowState: 'normal' },
-      });
-      return { browserArgs: [...windowArgs(right), ...display], close };
-    } finally {
-      await browser.close().catch(() => undefined);
-    }
+    appWindow = await chromium.launchPersistentContext(profile, {
+      headless: false,
+      viewport: null,
+      timeout: WINDOW_TIMEOUT_MS,
+      // The runner owns Ctrl-C and its escalation; a window must not take the signal first.
+      handleSIGINT: false,
+      handleSIGTERM: false,
+      args: [`--app=${url}`, '--window-size=800,800', ...display],
+    });
+    if (context.signal.aborted) throw new Error('cancelled');
+    const page = appWindow.pages()[0] ?? (await appWindow.waitForEvent('page', { timeout: WINDOW_TIMEOUT_MS }));
+    const area = await page.evaluate(() => {
+      const s = window.screen as Screen & { availLeft?: number; availTop?: number };
+      return { left: s.availLeft ?? 0, top: s.availTop ?? 0, width: s.availWidth, height: s.availHeight };
+    });
+    const { control, browser: right } = halves(area);
+    const session = await appWindow.newCDPSession(page);
+    const { windowId } = await session.send('Browser.getWindowForTarget');
+    await session.send('Browser.setWindowBounds', {
+      windowId,
+      bounds: { left: control.left, top: control.top, width: control.width, height: control.height, windowState: 'normal' },
+    });
+    return { browserArgs: [...windowArgs(right), ...display], close };
   } catch (cause) {
     context.log(`could not open the inspector in a window (${cause instanceof Error ? cause.message : String(cause)}); open it yourself at ${url}`);
     await close();

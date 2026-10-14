@@ -2,7 +2,7 @@
  * `--step`: the runner's side of the step prompt. A worker holds each step
  * until the gate answers; the gate prints the step, waits for the person at
  * the terminal, and lets it through. The run's first step goes through on its
- * own, since it is what opens the browser; every later step waits for a key,
+ * own, since it is what opens the app; every later step waits for a key,
  * except a setup test's and a retry's, which go through unless the person
  * asked to hold them. Only the runner process owns the terminal, so every
  * worker asks here, one prompt at a time.
@@ -149,11 +149,22 @@ export function createStepGate(options: StepGateOptions): StepGate {
   };
 
   const onKey = (_text: string | undefined, key: Key | undefined): void => {
-    if (queue[0] === undefined || key === undefined || Date.now() < armedAt) return;
+    if (key === undefined) return;
+    const interrupts = key.ctrl === true && (key.name === 'c' || key.name === 'd');
+    if (queue[0] === undefined) {
+      // A step is running, or a test is being finished, with the terminal still in raw mode, where Ctrl-C
+      // delivers no signal. It must still end the run; handing the terminal back makes a second one a real SIGINT.
+      if (interrupts) {
+        options.interrupt();
+        release(false);
+      }
+      return;
+    }
+    if (Date.now() < armedAt) return;
     if (key.name === 'c' && key.ctrl !== true) press('next');
     else if (key.name === 't' && key.ctrl !== true) press('test');
     else if (key.name === 'r' && key.ctrl !== true) press('rest');
-    else if (key.name === 'q' || key.name === 'escape' || (key.ctrl === true && (key.name === 'c' || key.name === 'd'))) press('stop');
+    else if (key.name === 'q' || key.name === 'escape' || interrupts) press('stop');
   };
 
   /** Starts reading keys; raw mode makes each press arrive alone, with no Enter to end a line. */
@@ -182,7 +193,7 @@ export function createStepGate(options: StepGateOptions): StepGate {
     options.say(head.targetName, `${describeStep(head.request)}\n  ${STEP_KEYS}`);
   };
 
-  /** Whether the run's first step has been let through; it opens the browser and needs no key. */
+  /** Whether the run's first step has been let through; it opens the app and needs no key. */
   let started = false;
 
   const release = (go: boolean): void => {

@@ -49,7 +49,7 @@ import {
   beforeEach,
   describe,
 } from '../../src/index.ts';
-import type { Engine, EngineAttemptContext, EngineHandle, EngineObserveOptions, EngineSnapshot } from '../../src/engine/index.ts';
+import type { Engine, EngineAttemptContext, EngineHandle, EngineInitInfo, EngineObserveOptions, EngineSnapshot } from '../../src/engine/index.ts';
 import { createToolLoopExecutor, defineTool } from '../../src/agent/public.ts';
 import type { Report } from '../../src/index.ts';
 import type { LanguageModelV2, LanguageModelV3, LanguageModelV4 } from '@ai-sdk/provider';
@@ -723,3 +723,11 @@ session.steps().push({} as StepRecord);
 session.tracePath = '/tmp/trace.md';
 // @ts-expect-error closing returns a read-only list of failures
 (await session.close()).push({} as SerializedError);
+
+// `EngineInitInfo.inspector` is the optional address of the `--inspect` page: an engine may show it beside its window.
+declare const initInfo: EngineInitInfo;
+void (initInfo.inspector satisfies { readonly url: string } | undefined);
+// @ts-expect-error the address is read-only
+initInfo.inspector = { url: 'http://127.0.0.1:1/' };
+// @ts-expect-error the inspector carries its address and nothing else
+void ({ ...initInfo, inspector: { url: 'http://127.0.0.1:1/', token: 'secret' } } satisfies EngineInitInfo);

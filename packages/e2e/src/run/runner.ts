@@ -103,7 +103,7 @@ export interface RunOptions {
   headed?: boolean | undefined;
   /**
    * Steps through the run (`--step`): the first step runs on its own, to open
-   * the browser, and every later step is held until a key is pressed in the
+   * the app, and every later step is held until a key is pressed in the
    * terminal: `c` runs it, `r` runs the rest without stopping, `q` stops the
    * run. Runs on one worker, with no test timeout, and needs a terminal on
    * `stepInput`.
@@ -827,12 +827,15 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
     const workerConfigPath = options.tests === undefined ? config.configPath : undefined;
     const inProcess = workerConfigPath === undefined;
     const runWorkers = inProcess ? 1 : config.workers;
-    const timeLimit: TimeLimit | undefined =
+    const configuredLimit: TimeLimit | undefined =
       options.maxDuration !== undefined
         ? { ms: options.maxDuration, source: '--max-duration' }
         : config.maxDuration === undefined
           ? undefined
           : { ms: config.maxDuration, source: 'maxDuration' };
+    // A person stepping through the run sets its pace, so a run-level limit would only cut the session short.
+    const timeLimit = options.step === true ? undefined : configuredLimit;
+    if (options.step === true && configuredLimit !== undefined) notice('run', `${configuredLimit.source} is ignored while stepping`);
 
     // Provisioning: an engine that must fetch something onto this machine (a
     // first-run browser download) does it here, once per target, before the
@@ -1030,7 +1033,11 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
       ? createStepGate({
           // The inspector can answer alone, so a run with one needs no terminal.
           input: options.inspect === true && options.stepInput === undefined && process.stdin.isTTY !== true ? undefined : (options.stepInput ?? process.stdin),
-          say: notice,
+          say: (target, line) => {
+            notice(target, line);
+            // Only the list reporter draws notices; without it the prompt would wait on a person who cannot see it.
+            if (listReporter === undefined && options.quiet !== true) process.stderr.write(`${line}\n`);
+          },
           interrupt: () => interrupt('graceful'),
           observe: (event) => inspector?.onGateEvent(event),
         })

@@ -52,7 +52,14 @@ suites that consume the built packages the way a user would.
     runner: worker-lifetime provisioning, app processes, and engine init,
     then `host.openSession({ name })` for each test's fixtures, deadline,
     steps, artifacts, and trace at close. Only one hosted attempt may be
-    opening, live, or closing per process; close it before opening another),
+    opening, live, or closing per process; close it before opening another;
+    `step-gate.ts` is `--step`'s gate: a worker holds each step and asks the
+    runner over the worker protocol (`step-gate`, answered by `step-go`),
+    because only the runner owns the terminal, and a refused step interrupts
+    the worker before it fails. `inspector.ts` and `inspector-page.ts` are
+    `--inspect`'s loopback control page, which rides the same gate; core only
+    hands an engine its address as `EngineInitInfo.inspector`, and the web
+    engine's `inspector-window.ts` tiles it beside its window),
     `src/collect/` registration+selection, `src/locator/` locator AST/engine,
     `src/agent/` the agent (the `act` executor socket plus the judgment
     methods), `src/mcp/` the `e2e mcp` server (a live session that rides

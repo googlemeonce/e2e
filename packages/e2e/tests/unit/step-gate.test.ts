@@ -142,6 +142,51 @@ describe('createStepGate', () => {
     expect(input.raw).toEqual([true, false]);
   });
 
+  describe('while a step runs and none is held', () => {
+    it.each([['\u0003'], ['\u0004']])('stops the run on %j, since raw mode delivers no signal, and hands the terminal back', async (key) => {
+      const { gate, input, interrupt } = await started();
+      const held = gate.ask(request(1), 'web');
+      await settle();
+      input.write('c');
+      expect(await held).toBe(true);
+      await settle();
+
+      input.write(key);
+      await settle();
+      expect(interrupt).toHaveBeenCalledTimes(1);
+      expect(input.raw).toEqual([true, false]);
+      expect(await gate.ask(request(2), 'web')).toBe(false);
+    });
+
+    it('stops the run on Ctrl-C while the rest of a test runs after t', async () => {
+      const { gate, input, interrupt } = await started();
+      void gate.ask(request(1), 'web');
+      await settle();
+      input.write('t');
+      await settle();
+      expect(await gate.ask(request(2), 'web')).toBe(true);
+
+      input.write('\u0003');
+      await settle();
+      expect(interrupt).toHaveBeenCalledTimes(1);
+      expect(input.raw).toEqual([true, false]);
+    });
+
+    it('does not take q, Esc, or c for a stop, since they are likely a slip', async () => {
+      const { gate, input, interrupt } = await started();
+      const held = gate.ask(request(1), 'web');
+      await settle();
+      input.write('c');
+      await held;
+      input.write('q');
+      input.write('\u001b');
+      input.write('c');
+      await settle();
+      expect(interrupt).not.toHaveBeenCalled();
+      expect(input.raw).toEqual([true]);
+    });
+  });
+
   it('ignores keys that arrive before the prompt has settled, then answers on the next one', async () => {
     const input = terminal();
     const stepGate = createStepGate({ input, say: vi.fn(), interrupt: vi.fn(), settleMs: 60 });
