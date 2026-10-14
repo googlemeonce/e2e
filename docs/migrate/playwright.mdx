@@ -313,8 +313,8 @@ uses it declares `requires: ['browser']` and other targets skip it. Calls on
 | `-g`, `--grep`, `--grep-invert` | `--grep` and `--grep-invert`, matched against the describe titles and the test title joined by spaces; tags are `--tag` and `--exclude-tag` | same |
 | `tests/login.spec.ts:12` | `tests/login.e2e.ts:12`, the test whose `test(` call opens on that line | same |
 | `--headed` | the same | same |
-| `--debug` | not yet; `--headed` to watch. `e2e run --debug` prints phase timings and the agent step table, not an inspector | missing |
-| `--ui` | not yet; `--watch` reruns on save with vitest's keys, `--headed` to watch, `e2e mcp` to drive the app from a coding agent | missing |
+| `--debug` | `--inspect`, which steps through a run from a page beside the browser, or `--step` in the terminal. `e2e run --debug` is a different flag: it prints phase timings and the agent step table | renamed |
+| `--ui` | not yet; `--watch` reruns on save with vitest's keys, `--inspect` steps through one run, `e2e mcp` to drive the app from a coding agent | missing |
 | `--retries`, `--workers`, `--config`, `--pass-with-no-tests` | the same | same |
 | `--reporter` | the same flag; the ids are `list`, `json`, `junit`, `markdown` | same |
 | `--output` | `--output`, the results directory; each test's trace page and artifacts are in its `results/` | same |

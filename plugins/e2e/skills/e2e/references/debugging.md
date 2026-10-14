@@ -110,6 +110,8 @@ jq '.run.results[] | select(.selected and .status != "passed") | .attempts[-1]
 | Do | When |
 | --- | --- |
 | `--headed` | Watch the failing step |
+| `--step` | Run step 1, then hold each later step until `c` is pressed (a person at a terminal, not an agent: refused in CI) |
+| `--inspect` | The same, from the inspector beside the browser (a person, not an agent: refused in CI) |
 | `--workers 1 --retries 0` | Take parallelism and retries out of the picture |
 | `--no-cache` | Rule out a stale `agent.act` replay |
 | `--debug` | Each agent step's duration, model calls, cost, transcript |

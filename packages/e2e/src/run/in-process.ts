@@ -37,6 +37,10 @@ export interface InProcessRunnerOptions {
   readonly rerunDir: string | undefined;
   readonly sessionStore: SessionStore;
   readonly headed: boolean;
+  /** Whether each step waits for the runner's go-ahead (`--step`). */
+  readonly step: boolean;
+  /** The inspector's address (`--inspect`). */
+  readonly inspectorUrl: string | undefined;
   readonly debug: DebugTrace;
   /** The environment each target's workers run with; see `EngineInitInfo.env`. */
   readonly envFor: (targetName: string) => Readonly<Record<string, string | undefined>>;
@@ -178,6 +182,8 @@ class InProcessRunner implements UnitRunner {
       artifactsRoot: this.options.artifactsRoot,
       rerunDir: this.options.rerunDir,
       headed: this.options.headed,
+      step: this.options.step,
+      inspectorUrl: this.options.inspectorUrl,
       workerSlot: this.workerSlot,
       env: this.options.envFor(this.targetName),
       isolated: false,

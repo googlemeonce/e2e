@@ -220,6 +220,10 @@ A local headed launch opens a small window. A hosted browser uses the
 window size you requested from the service. `browser.setViewport` still
 works.
 
+Under [`--inspect`](/debugging#inspect-a-run), the browser
+opens on the right half of the screen and fills it, whatever the viewport
+default says. A `viewport` you set yourself is kept.
+
 ### Resize inside a test
 
 `browser.setViewport` resizes the page for the rest of the attempt, also

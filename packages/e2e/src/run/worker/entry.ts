@@ -212,6 +212,8 @@ async function bootstrap(
     artifactsRoot: message.artifactsRoot,
     rerunDir: message.rerunDir,
     headed: message.headed,
+    step: message.step,
+    inspectorUrl: message.inspectorUrl,
     workerSlot: message.workerSlot,
     env: process.env,
     isolated: true,

@@ -38,6 +38,8 @@ npx e2e telemetry [disable|enable] # anonymous usage telemetry: status or switch
 | `--last-failed` | The tests the previous run (`<output>/report.json`) did not pass or never ran (`--max-failures` and `--max-duration` included), plus every test in a failed `beforeAll` or `afterAll` scope. A test another filter leaves out stays owed (`run.carried` in the report) until a rerun runs it. No report is `NO_LAST_RUN`, exit 2. |
 | `--shard <index/total>` | One contiguous slice of the selected tests (`--shard 2/3`), cut after every other filter; serial groups stay whole, each shard brings its own setup tests. |
 | `--headed` | Visible browser or simulator when the engine supports it. |
+| `--step` | Run the first step, then hold each later step until `c` is pressed; `t` finishes the current test, `r` runs the rest, `q` stops the run (exit 130). Setup tests and retries run without stopping. One worker, no test timeout. Needs a terminal: refused with exit 2 in CI, with `--watch`, with `--reporter json`, and with `--workers` above 1. |
+| `--inspect` | `--step` from the inspector beside the browser: the test file with the line about to run, the steps grouped by test, and Next, Finish test, Run the rest, and Stop buttons. Implies `--headed`, needs no terminal, refused in CI. |
 | `--agent <names>` | Run unpinned tests as these `agents.<name>` entries (default `agents.default`), comma-separated or repeated; several names run each such test once per agent. |
 | `--workers <n>`, `--retries <n>` | Override the resolved values; retries 0-10, workers 1-1024. |
 | `--max-failures <n>` | Stop after n failures: the rest skip (cause `failure-limit`), running tests end `interrupted`; exit 1. |

@@ -300,6 +300,21 @@ export interface StepRecorderOptions {
   readonly redact?: (text: string) => string;
   /** Cuts every running step when it aborts: the step fails with the signal's error and its body is abandoned. */
   readonly signal?: AbortSignal;
+  /**
+   * Holds each step before its body runs until this settles (`--step`). The
+   * step is already recorded and published, so reporters show it; a rejection
+   * fails the step. Time spent here is not the step's duration.
+   */
+  readonly beforeStep?: (step: StepGateInfo) => Promise<void>;
+}
+
+/** The step a `beforeStep` hold is for, as the person stepping through the run reads it. */
+export interface StepGateInfo {
+  readonly index: number;
+  readonly api: string;
+  readonly label: string;
+  /** `tests/x.e2e.ts:LINE`, when the call site is known. */
+  readonly source?: string | undefined;
 }
 
 /** Frames kept when a step captures where it was called from; the user's line is a few frames up. */
@@ -378,6 +393,7 @@ export class StepRecorder {
   private readonly projectRoot: string | undefined;
   private readonly redact: ((text: string) => string) | undefined;
   private readonly signal: AbortSignal | undefined;
+  private readonly beforeStep: StepRecorderOptions['beforeStep'];
 
   constructor(
     private readonly attemptId: string,
@@ -389,6 +405,7 @@ export class StepRecorder {
     this.projectRoot = options.projectRoot;
     this.redact = options.redact;
     this.signal = options.signal;
+    this.beforeStep = options.beforeStep;
   }
 
   /** Replaces secret values in text the way every record is redacted; identity without a redactor. */
@@ -452,8 +469,18 @@ export class StepRecorder {
   }
 
   private async execute<T>(record: StepRecord, body: () => Promise<T>, options: StepRunOptions): Promise<T> {
-    const startedMs = Date.now();
+    let startedMs = Date.now();
     try {
+      if (this.beforeStep !== undefined) {
+        try {
+          const held = this.beforeStep({ index: record.index, api: record.api, label: record.label, ...(record.source === undefined ? {} : { source: `${record.source.file}:${record.source.line}` }) });
+          await (this.signal === undefined ? held : withAbort(held, this.signal, () => new TestError('CANCELLED', `${record.api} cancelled`)));
+        } finally {
+          // The hold is the person's time, not the step's: the step starts, and is timed, once it is let go.
+          startedMs = Date.now();
+          record.startedAt = timestamp();
+        }
+      }
       // Model calls made inside the body are attributed to this step.
       const work = this.scope.run(record, () => withAiTraceStep(record.api, record.label, body));
       const result = await (this.signal === undefined ? work : withAbort(work, this.signal, () => new TestError('CANCELLED', `${record.api} cancelled`)));

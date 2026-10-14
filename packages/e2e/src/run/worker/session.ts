@@ -10,9 +10,11 @@ import type { ModuleRegistration } from '../../collect/registry.ts';
 import type { TestTargetPair } from '../../collect/select.ts';
 import type { ResolvedConfig, ResolvedTarget } from '../../config/resolve.ts';
 import { DebugTrace } from '../../internal/debug.ts';
+import { TestError } from '../../internal/errors.ts';
 import { TargetExecutor, type InMemoryAttempts } from '../execute.ts';
 import { encodeResult, type RunError } from '../records.ts';
 import type { SessionStore } from '../sessions.ts';
+import type { StepGateInfo } from '../steps.ts';
 import { countsTowardFailureLimit, disappearedResult, failureLimitSkip } from '../units.ts';
 import type { FailureLimit, MainToWorker, RunUnitMessage, WirePair, WorkerToMain } from './protocol.ts';
 
@@ -45,6 +47,10 @@ export interface TargetWorkerDeps {
   /** See `TargetExecutorOptions.rerunDir`. */
   readonly rerunDir: string | undefined;
   readonly headed: boolean;
+  /** Whether each step waits for the runner's go-ahead (`--step`). */
+  readonly step: boolean;
+  /** See `TargetExecutorOptions.inspectorUrl`. */
+  readonly inspectorUrl: string | undefined;
   /** See `TargetExecutorOptions.workerSlot`. */
   readonly workerSlot: number;
   /** See `TargetExecutorOptions.env`. */
@@ -108,6 +114,7 @@ export class TargetWorker {
         rerunDir: deps.rerunDir,
         sessionStore: deps.sessionStore,
         headed: deps.headed,
+        inspectorUrl: deps.inspectorUrl,
         workerSlot: deps.workerSlot,
         env: deps.env,
         isolated: deps.isolated,
@@ -142,9 +149,11 @@ export class TargetWorker {
               serialId: pair.test.serialId,
             });
           },
+          ...(deps.step ? { onStepGate: (pair, step, attempt) => this.gate(pair, step, attempt) } : {}),
           onAttemptDeadline: (pair, attempt) => {
             // A worker paused at a breakpoint looks blocked; with a debugger attached nothing watches its attempts.
-            if (inspector.url() !== undefined) return;
+            // One held at a step waits on a person, which no timeout should cut short.
+            if (inspector.url() !== undefined || deps.step) return;
             this.host.emit({
               type: 'attempt-deadline',
               testId: pair.test.id,
@@ -181,6 +190,31 @@ export class TargetWorker {
     return this.executor?.strayRejection(cause) ?? false;
   }
 
+  /** Steps held for the runner's go-ahead, by `step-gate` id, each settled by the `step-go` that answers it. */
+  private readonly gates = new Map<number, (go: boolean) => void>();
+  private nextGate = 0;
+
+  /** Asks the runner to let one step through; resolves when it does, rejects when it stops the attempt. */
+  private gate(pair: TestTargetPair, step: StepGateInfo, attempt: number): Promise<void> {
+    const id = this.nextGate++;
+    return new Promise<void>((resolve, reject) => {
+      this.gates.set(id, (go) => (go ? resolve() : reject(new TestError('CANCELLED', 'stopped at the step prompt'))));
+      this.host.emit({
+        type: 'step-gate',
+        id,
+        testId: pair.test.id,
+        agent: pair.agent,
+        repeat: pair.repeat,
+        index: step.index,
+        attempt,
+        setup: pair.test.kind === 'setup',
+        api: step.api,
+        label: step.label,
+        ...(step.source === undefined ? {} : { source: step.source }),
+      });
+    });
+  }
+
   handle(message: MainToWorker): void {
     switch (message.type) {
       case 'interrupt':
@@ -199,6 +233,14 @@ export class TargetWorker {
       case 'ping':
         // Answered now, not queued behind the running unit: the answer is the proof the event loop turns.
         this.host.emit({ type: 'pong' });
+        return;
+      case 'step-go':
+        // Answered now too: the unit that asked is waiting on it, so queueing it behind the unit would deadlock.
+        // A refusal is the person stopping the run. The runner's interrupt may still be on its way, and a step
+        // that fails first would end the attempt as failed, so the worker is interrupted before the step is.
+        if (!message.go) this.interruptController.abort();
+        this.gates.get(message.id)?.(message.go);
+        this.gates.delete(message.id);
         return;
       default:
         message satisfies never;

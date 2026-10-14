@@ -447,6 +447,13 @@ export interface EngineInitInfo {
   /** Whether the run asked for a visible surface (`--headed`). */
   readonly headed: boolean;
   /**
+   * The inspector of a run stepped through with `--inspect`: where the person
+   * reads the test and presses the buttons. An engine with a window of its
+   * own may show it beside that window; one that cannot ignores it. The
+   * runner prints the address either way.
+   */
+  readonly inspector?: { readonly url: string } | undefined;
+  /**
    * This worker's 0-based slot among the target's workers: the lowest slot
    * free when the worker was spawned, so a replacement worker takes over the
    * slot of the one that exited. An engine with several devices hands each

@@ -55,6 +55,8 @@ describe('ChildProcessRunner', () => {
         artifactsRoot: dir,
         rerunDir: undefined,
         headed: false,
+        step: false,
+        inspectorUrl: undefined,
         sessionsRoot: dir,
         sessionKeyBase64: '',
         debug: false,

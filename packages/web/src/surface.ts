@@ -40,6 +40,7 @@ import {
 import { matchesText } from 'e2e/engine';
 import { classifyActionError, classifyInputError, dispatchLocatorAction, dispatchPointerAction } from './actions.ts';
 import { BrowserConnection, connectCdp, type BrowserName } from './browser-connection.ts';
+import { openInspectorWindow, type InspectorWindow } from './inspector-window.ts';
 import { AttemptSession, type StorageState } from './attempt-session.ts';
 import type { CdpEndpointResolver } from './cdp-recovery.ts';
 import { LeasedBrowsers, type BrowserProvider, type LeaseDownloads } from './provider.ts';
@@ -276,6 +277,8 @@ export class PlaywrightSurface {
   private session: AttemptSession | undefined;
   private readonly usedContexts = new Set<string>();
   private readonly viewport: ViewportSize | null;
+  /** Whether the config set `viewport`, which `--inspect` then leaves alone instead of fitting the page to its half of the screen. */
+  private readonly viewportConfigured: boolean;
   private readonly screencast: WebScreencastOptions;
   /** Injected request headers, names lowercased so they replace the browser's own of the same name. */
   private readonly headers: Readonly<Record<string, string>> | undefined;
@@ -292,6 +295,8 @@ export class PlaywrightSurface {
   private app: EngineAppInfo = {};
   private projectRoot = '';
   private headed = false;
+  /** The inspector's window under `--inspect`, closed with the engine. */
+  private inspectorWindow: InspectorWindow | undefined;
   private artifactsDir = '';
   /** Navigations the engine has in flight, which the app log leaves to the step that started them. */
   private ownNavigations = 0;
@@ -311,6 +316,7 @@ export class PlaywrightSurface {
     this.leases = typeof options.browser === 'object' && options.browser !== null ? new LeasedBrowsers(options.browser) : undefined;
     this.connect = options.connect;
     this.viewport = options.viewport === undefined ? DEFAULT_VIEWPORT : options.viewport;
+    this.viewportConfigured = options.viewport !== undefined;
     this.screencast = options.screencast ?? {};
     this.headers = options.headers === undefined ? undefined : lowercaseNames(options.headers);
     this.basicAuth = options.basicAuth;
@@ -350,6 +356,11 @@ export class PlaywrightSurface {
     this.projectRoot = info.projectRoot;
     this.headed = info.headed;
     this.leases?.init(info);
+    // The inspector of `--inspect` goes beside a local Chromium window, which then opens on the other half of the screen.
+    if (info.inspector !== undefined && info.headed && this.browserName === 'chromium' && this.connect === undefined && this.leases === undefined) {
+      this.inspectorWindow = await openInspectorWindow(info.inspector.url, { log: info.log, signal: info.signal });
+      this.connection.launchArgs = this.inspectorWindow?.browserArgs ?? [];
+    }
     // The browser was installed in `prepare`; a launch or attach is the one
     // boot step left that can outlive a launch budget, and it honours the
     // init signal. A failed init-script read throws only after the launch
@@ -474,14 +485,16 @@ export class PlaywrightSurface {
     this.routes = routes;
     this.initScripts = initScripts;
     this.dialogs = dialogs;
+    // Beside the inspector the browser fills its half of the screen, as a fixed viewport would only pick a window size.
+    const viewport = this.inspectorWindow !== undefined && !this.viewportConfigured ? null : this.viewport;
     const session = new AttemptSession({
       artifactsDir: context.artifactsDir,
-      viewport: this.viewport,
+      viewport,
       screencast: this.screencast,
       media: this.media,
       acquire: (signal) => this.acquireBrowser(signal),
       contextOptions: {
-        viewport: this.viewport,
+        viewport,
         acceptDownloads: true,
         ...(credentials === undefined ? {} : { httpCredentials: credentials }),
         ...(this.userAgent === undefined ? {} : { userAgent: this.userAgent }),
@@ -548,6 +561,11 @@ export class PlaywrightSurface {
       () => this.endAttempt(context),
       () => withinCleanupBudget(this.connection.dispose(), context),
       async () => this.leases?.dispose(context),
+      async () => {
+        const window = this.inspectorWindow;
+        this.inspectorWindow = undefined;
+        await window?.close();
+      },
     ];
     let failure: { cause: unknown } | undefined;
     for (const task of tasks) {

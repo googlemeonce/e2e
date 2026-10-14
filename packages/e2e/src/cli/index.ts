@@ -333,6 +333,35 @@ function rejectWatchIn(command: Command, reporters: readonly Reporter[] | undefi
 }
 
 /**
+ * Where `--step` cannot work: without a terminal to answer the prompt (CI, a
+ * pipe), beside `--watch`, which reads the same keys, under the json reporter,
+ * whose stdout is one document, and on more than one worker, since a person
+ * steps through one run of steps at a time.
+ */
+function rejectStepIn(
+  command: Command,
+  options: { readonly watch?: boolean; readonly reporter?: readonly Reporter[]; readonly workers?: number; readonly inspect?: boolean },
+): void {
+  const flag = options.inspect === true ? '--inspect' : '--step';
+  if (isCiMode(process.env)) {
+    command.error(`error: ${flag} waits for a person, so it is refused in CI (CI is set)`, { exitCode: 2 });
+  }
+  // The inspector answers on its own; without it a key is the only answer.
+  if (options.inspect !== true && (process.stdin.isTTY !== true || process.stdout.isTTY !== true)) {
+    command.error('error: --step needs a terminal: it reads a key before every step, and stdin and stdout must both be one', { exitCode: 2 });
+  }
+  if (options.watch === true) {
+    command.error(`error: ${flag} cannot be combined with --watch: it runs once, under a person's hands`, { exitCode: 2 });
+  }
+  if (options.reporter?.includes('json') === true) {
+    command.error(`error: ${flag} cannot be combined with --reporter json: the json reporter writes one document to stdout`, { exitCode: 2 });
+  }
+  if (options.workers !== undefined && options.workers > 1) {
+    command.error(`error: ${flag} runs on one worker, so --workers cannot be more than 1`, { exitCode: 2 });
+  }
+}
+
+/**
  * Runs the watch loop under the Ctrl-C ladder, armed once for every run of
  * the session; each run is recorded for telemetry as it ends, and the exit
  * code is the last run's. What throws before a run starts prints as a
@@ -561,6 +590,8 @@ function createProgram(version: string, telemetry: Telemetry): Command {
   selectionOptions(runCommand)
     .optionsGroup('Execution:')
     .option('--headed', 'show the UI while tests run, when the engine supports it')
+    .option('--step', 'run the first step, then hold each later step until c is pressed (r runs the rest, q stops); a terminal, one worker')
+    .option('--inspect', 'step through the run from a inspector beside the browser: the test file, the line about to run, and buttons (implies --step and --headed)')
     .option(
       '--agent <names>',
       'the configured agent unpinned tests run with (default: agents.default); comma-separated or repeated names run each such test once per agent',
@@ -623,6 +654,8 @@ function createProgram(version: string, telemetry: Telemetry): Command {
           config?: string;
           target?: string[];
           headed?: boolean;
+          step?: boolean;
+          inspect?: boolean;
           agent?: string[];
           retries?: number;
           workers?: number;
@@ -651,6 +684,7 @@ function createProgram(version: string, telemetry: Telemetry): Command {
           targetIds: options.target,
           ...selectionRunOptions(options),
           headed: options.headed,
+          step: options.step,
           agent: options.agent,
           retries: options.retries,
           workers: options.workers,
@@ -669,6 +703,13 @@ function createProgram(version: string, telemetry: Telemetry): Command {
           video: recordingOption(options.video),
         };
         if (options.watch === true) rejectWatchIn(command, options.reporter);
+        if (options.step === true || options.inspect === true) rejectStepIn(command, options);
+        if (options.inspect === true) {
+          // The inspector is the way to step through a run: it needs a visible browser beside it.
+          runOptions.step = true;
+          runOptions.inspect = true;
+          runOptions.headed = true;
+        }
         const output = claimRunnerOutput();
         try {
           if (options.watch === true) {

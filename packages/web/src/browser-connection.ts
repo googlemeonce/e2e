@@ -35,6 +35,8 @@ const RUNNER_OWNS_SIGNALS = { handleSIGINT: false, handleSIGTERM: false } as con
  */
 export class BrowserConnection {
   private pending: Promise<Browser> | undefined;
+  /** Extra flags a local launch starts the browser with, such as the window the browser opens on. */
+  launchArgs: readonly string[] = [];
 
   /**
    * Returns a connected shared browser, launching or relaunching as needed.
@@ -58,7 +60,14 @@ export class BrowserConnection {
     }
     await registerSelectorEngines();
     const launching =
-      connect !== undefined ? connect() : browserType(name).launch({ headless: !headed, timeout: timeoutMs, ...RUNNER_OWNS_SIGNALS });
+      connect !== undefined
+        ? connect()
+        : browserType(name).launch({
+            headless: !headed,
+            timeout: timeoutMs,
+            ...(this.launchArgs.length === 0 ? {} : { args: [...this.launchArgs] }),
+            ...RUNNER_OWNS_SIGNALS,
+          });
     this.pending = launching;
     try {
       return await launching;

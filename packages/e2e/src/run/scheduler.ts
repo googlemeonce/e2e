@@ -38,6 +38,7 @@ import {
   type FailureLimit,
   type OutputMessage,
   type PairStart,
+  type StepGateRequest,
   type WirePair,
   type WorkerToMain,
   decodeResult,
@@ -69,6 +70,11 @@ export interface SchedulerEvents {
   onOutput?(output: Omit<OutputMessage, 'type'>, targetName: string): void;
   /** One line a worker's engine `init` reported. */
   onNotice?(message: string, targetName: string): void;
+  /**
+   * A worker holds a step under `--step`. Resolves true to let it run, false
+   * to stop its attempt there; the worker waits for exactly this answer.
+   */
+  onStepGate?(request: StepGateRequest, targetName: string): Promise<boolean>;
   /** Phase timings a child-process worker drained after one unit. */
   onDebug?(snapshot: DebugSnapshot): void;
   /** Model calls a child-process worker drained after one unit. */
@@ -758,6 +764,16 @@ class Scheduler {
       }
       case 'pong': {
         worker.pong();
+        break;
+      }
+      case 'step-gate': {
+        const { type: _type, id, ...request } = message;
+        const answer = this.options.events.onStepGate?.(request, worker.targetName) ?? Promise.resolve(true);
+        // A worker waits for exactly one answer: a refusal, or a gate that failed, stops its attempt rather than hanging it.
+        void answer.then(
+          (go) => worker.runner.send({ type: 'step-go', id, go }),
+          () => worker.runner.send({ type: 'step-go', id, go: false }),
+        );
         break;
       }
       case 'progress': {

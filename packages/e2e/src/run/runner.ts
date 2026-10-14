@@ -43,11 +43,13 @@ import { writeTracePages, type TracePages } from '../report/traces.ts';
 import { STATELESS_REPORTERS } from '../report/builtin.ts';
 import { ListReporter } from '../report/list.ts';
 import { writeJsonReport } from '../report/write.ts';
-import { createRunEventEmitter, toEventResult, type RunEventSink, type RunExitCode, type RunStatus, type RunEventFact, type SetupStep } from './events.ts';
+import { createRunEventEmitter, toEventResult, type RunEvent, type RunEventSink, type RunExitCode, type RunStatus, type RunEventFact, type SetupStep } from './events.ts';
 import { allocateAppPorts } from './app-ports.ts';
 import { inProcessSpawner } from './in-process.ts';
 import { someSkippedAfterFailure, tracedResultIds, type ResultRecord, type RunError, type SerialGroupRecord } from './records.ts';
 import { runUnits } from './scheduler.ts';
+import { createStepGate, type StepInput } from './step-gate.ts';
+import { startInspector, type Inspector } from './inspector.ts';
 import { buildWorkPlans, plannedSlots, type TargetWorkPlan, type TimeLimit } from './units.ts';
 import { SessionStore } from './sessions.ts';
 import { outputLayout } from './output.ts';
@@ -99,6 +101,22 @@ export interface RunOptions {
   shard?: Shard | undefined;
   targetIds?: readonly string[] | undefined;
   headed?: boolean | undefined;
+  /**
+   * Steps through the run (`--step`): the first step runs on its own, to open
+   * the browser, and every later step is held until a key is pressed in the
+   * terminal: `c` runs it, `r` runs the rest without stopping, `q` stops the
+   * run. Runs on one worker, with no test timeout, and needs a terminal on
+   * `stepInput`.
+   */
+  step?: boolean | undefined;
+  /**
+   * Serves the inspector (`--inspect`) beside a stepped run: the test file with
+   * the line about to run, the steps so far, and buttons that answer the
+   * prompt. Needs `step`; the terminal is optional.
+   */
+  inspect?: boolean | undefined;
+  /** The stream `step` reads keys from; the process's stdin by default. */
+  stepInput?: StepInput | undefined;
   retries?: number | undefined;
   workers?: number | undefined;
   /**
@@ -399,6 +417,8 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
   const cli: CliOverrides = {};
   if (options.retries !== undefined) cli.retries = options.retries;
   if (options.workers !== undefined) cli.workers = options.workers;
+  // One prompt at a time: a person steps through one worker's steps.
+  if (options.step === true) cli.workers = 1;
   if (options.reporters !== undefined) cli.reporters = options.reporters;
   if (options.noCache === true) cli.cache = 'off';
   if (options.strictCache === true) cli.cacheStrict = true;
@@ -450,11 +470,14 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
     ...reporterIds.filter((id) => id !== 'list').map((id) => STATELESS_REPORTERS[id]),
     ...(loaded.config?.customReporters ?? []),
   ];
+  /** The inspector of a run with `--inspect`, once it is serving; run events reach it from the first. */
+  let inspector: Inspector | undefined;
   const emit = createRunEventEmitter([
     ...activeReporters.map((reporter) =>
       reporter.onEvent === undefined ? undefined : { name: reporter.name, onEvent: reporter.onEvent.bind(reporter) },
     ),
     ...(options.onEvent === undefined ? [] : [{ name: 'onEvent', onEvent: options.onEvent }]),
+    ...(options.inspect === true ? [{ name: 'inspector', onEvent: (event: RunEvent) => inspector?.onRunEvent(event) }] : []),
   ]);
 
   /** Records one run-level error once: into the report and onto the stream. */
@@ -899,6 +922,15 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
       aiTraceRecorder = new AiTraceRecorder();
       await registerAiTraceRecorder(aiTraceRecorder, loadAiSdk);
     }
+    if (options.inspect === true && stepGate !== undefined) {
+      inspector = await startInspector({
+        projectRoot: config.projectRoot,
+        gate: stepGate,
+        // What the reporters count: the tests that will run, not the ones a file selection filtered out.
+        total: plannedFiles(selection).reduce((sum, file) => sum + file.tests, 0),
+      });
+      notice('run', `inspector: ${inspector.url}`);
+    }
     const spawn =
       workerConfigPath === undefined
         ? inProcessSpawner({
@@ -910,6 +942,8 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
             rerunDir,
             sessionStore: store,
             headed: options.headed ?? false,
+            step: options.step === true,
+            inspectorUrl: inspector?.url,
             debug,
             envFor: workerEnvFor(plans, env),
           })
@@ -923,6 +957,8 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
             artifactsRoot,
             rerunDir,
             headed: options.headed ?? false,
+            step: options.step === true,
+            inspectorUrl: inspector?.url,
             sessionsRoot: layout.sessions,
             sessionKeyBase64: store.exportKeyForWorker(),
             debug: debug.enabled,
@@ -962,6 +998,7 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
             emit({ type: 'step', testId: pair.testId, agent: pair.agent, repeat: pair.repeat, target: targetName, progress }),
           onOutput: (output, targetName) => emit({ type: 'output', target: targetName, ...output }),
           onNotice: (message, targetName) => notice(targetName, message),
+          ...(stepGate === undefined ? {} : { onStepGate: (request, targetName) => stepGate.ask(request, targetName) }),
           onDebug: (snapshot) => debug.merge(snapshot),
           onAiTrace: (snapshot) => aiTrace?.merge(snapshot),
         },
@@ -985,6 +1022,20 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
     controller.abort();
     emit({ type: 'run-interrupted', mode });
   };
+  // The step prompt belongs to the runner, which owns the terminal. An
+  // interrupt, from any source, answers every held step with a stop so no
+  // worker waits on a prompt nobody will see.
+  const stepGate =
+    options.step === true
+      ? createStepGate({
+          // The inspector can answer alone, so a run with one needs no terminal.
+          input: options.inspect === true && options.stepInput === undefined && process.stdin.isTTY !== true ? undefined : (options.stepInput ?? process.stdin),
+          say: notice,
+          interrupt: () => interrupt('graceful'),
+          observe: (event) => inspector?.onGateEvent(event),
+        })
+      : undefined;
+  interruptController.signal.addEventListener('abort', () => stepGate?.release(false), { once: true });
   const bridges = (
     [
       [options.interruptSignal, 'graceful'],
@@ -1020,6 +1071,8 @@ export async function run(options: RunOptions = {}): Promise<RunOutcome> {
     }
     return await finish();
   } finally {
+    stepGate?.close();
+    await inspector?.close();
     for (const release of bridges) release();
   }
 }

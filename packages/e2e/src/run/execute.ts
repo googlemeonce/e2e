@@ -57,7 +57,7 @@ import { interruptedSkip, pairKey, pairResult, unstartedResult } from './units.t
 import { adoptSecrecy, carriedSecrecy, processSecrets, registerDerivedSecrets, redactForSession, resolveSecretValue, sessionSecrecy, staticSecretLedger } from './secrecy.ts';
 import { isSecret } from '../secrets.ts';
 import { SessionStaging, SessionStore, targetIdentity, type SessionIdentity } from './sessions.ts';
-import { StepRecorder, type StepProgress } from './steps.ts';
+import { StepRecorder, type StepGateInfo, type StepProgress } from './steps.ts';
 import { EngineError } from '../engine/contract.ts';
 import { hostedVideoUrl } from '../engine/recording.ts';
 import { WorkerModels } from './worker-models.ts';
@@ -78,6 +78,12 @@ export interface ExecutionEvents {
   onPairStart?(pair: TestTargetPair): void;
   /** Live step progress of one running attempt, for reporters. */
   onProgress?(pair: TestTargetPair, progress: StepProgress): void;
+  /**
+   * Holds one step before it runs until the person stepping through the run
+   * lets it go (`--step`); rejects to stop the attempt at it. A run that
+   * steps has no test timeout, since the time is the person's.
+   */
+  onStepGate?(pair: TestTargetPair, step: StepGateInfo, attempt: number): Promise<void>;
   /** An attempt's test timeout started, as its `beforeEach` hooks and body begin. */
   onAttemptDeadline?(pair: TestTargetPair, attempt: { readonly index: number; readonly id: string; readonly startedAt: string }): void;
   /** The attempt `onAttemptDeadline` announced has ended, or one that never got that far has. */
@@ -92,6 +98,9 @@ export interface ExecutionEvents {
   onRunAbort?(error: RunError): void;
 }
 
+/** The test timeout of a run that steps: a day, since the person at the prompt sets the pace. */
+const STEPPING_TIMEOUT_MS = 24 * 60 * 60 * 1000;
+
 export interface TargetExecutorOptions {
   readonly config: ResolvedConfig;
   readonly target: ResolvedTarget;
@@ -105,6 +114,8 @@ export interface TargetExecutorOptions {
   readonly rerunDir?: string | undefined;
   readonly sessionStore: SessionStore;
   readonly headed: boolean;
+  /** The inspector's address (`--inspect`); see `EngineInitInfo.inspector`. */
+  readonly inspectorUrl?: string | undefined;
   /** This worker's slot among the target's workers; see `EngineInitInfo.workerSlot`. */
   readonly workerSlot: number;
   /** This worker's environment; see `EngineInitInfo.env`. */
@@ -316,6 +327,7 @@ export class TargetExecutor implements SerialHost {
             app: engineAppInfo(this.target.app),
             env: this.options.env,
             headed: this.options.headed,
+            ...(this.options.inspectorUrl === undefined ? {} : { inspector: { url: this.options.inspectorUrl } }),
             workerSlot: this.options.workerSlot,
             signal,
             log: (line) => this.options.events?.onNotice?.(`${this.target.name} worker ${String(this.options.workerSlot)}: ${line}`),
@@ -824,6 +836,9 @@ export class TargetExecutor implements SerialHost {
       maxEventsPerStep: this.config.limits.maxEventsPerStep,
       projectRoot: this.config.projectRoot,
       redact,
+      ...(this.options.events?.onStepGate === undefined
+        ? {}
+        : { beforeStep: (step: StepGateInfo) => this.options.events!.onStepGate!(pair, step, attemptIndex) }),
       ...(onProgress === undefined
         ? {}
         : { onProgress: (progress: StepProgress) => onProgress(pair, progress) }),
@@ -989,7 +1004,7 @@ export class TargetExecutor implements SerialHost {
         ),
       );
 
-      const testDeadline = new Deadline(pair.options.timeout);
+      const testDeadline = new Deadline(this.options.events?.onStepGate === undefined ? pair.options.timeout : STEPPING_TIMEOUT_MS);
       this.options.events?.onAttemptDeadline?.(pair, { index: attemptIndex, id: attemptId, startedAt });
       const budget = new AttemptBudget(attemptAbort.signal, testDeadline);
       const saveSession =

@@ -289,6 +289,121 @@ describe('e2e run argument parsing', () => {
     expect(watchMock).not.toHaveBeenCalled();
   });
 
+  describe('--step', () => {
+    /** Runs `use` with stdin and stdout reporting as terminals, the way a person's shell does. */
+    async function onTerminal(use: () => Promise<void>): Promise<void> {
+      const flags = [process.stdin, process.stdout].map((stream) => Object.getOwnPropertyDescriptor(stream, 'isTTY'));
+      for (const stream of [process.stdin, process.stdout]) Object.defineProperty(stream, 'isTTY', { value: true, configurable: true });
+      const ci = process.env.CI;
+      delete process.env.CI;
+      try {
+        await use();
+      } finally {
+        [process.stdin, process.stdout].forEach((stream, index) => {
+          const flag = flags[index];
+          if (flag === undefined) delete (stream as { isTTY?: boolean }).isTTY;
+          else Object.defineProperty(stream, 'isTTY', flag);
+        });
+        if (ci !== undefined) process.env.CI = ci;
+      }
+    }
+
+    it('is passed to the runner on a terminal', async () => {
+      await onTerminal(() => invoke('run', '--step'));
+      expect(lastRunOptions().step).toBe(true);
+      expect(process.exitCode).not.toBe(2);
+    });
+
+    it('is refused in CI, exit code 2, without running', async () => {
+      const ci = process.env.CI;
+      process.env.CI = '1';
+      try {
+        await invoke('run', '--step');
+        expect(process.exitCode).toBe(2);
+        expect(written(stderrSpy)).toContain('--step waits for a person, so it is refused in CI');
+      } finally {
+        if (ci === undefined) delete process.env.CI;
+        else process.env.CI = ci;
+      }
+      expect(runMock).not.toHaveBeenCalled();
+    });
+
+    it('is refused without a terminal, exit code 2, without running', async () => {
+      const ci = process.env.CI;
+      delete process.env.CI;
+      try {
+        await invoke('run', '--step');
+        expect(process.exitCode).toBe(2);
+        expect(written(stderrSpy)).toContain('--step needs a terminal');
+      } finally {
+        if (ci !== undefined) process.env.CI = ci;
+      }
+      expect(runMock).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      [['--watch'], 'cannot be combined with --watch'],
+      [['--reporter', 'list,json'], 'cannot be combined with --reporter json'],
+      [['--workers', '2'], 'runs on one worker'],
+    ])('is refused with %j, exit code 2, without running', async (flags, message) => {
+      await onTerminal(() => invoke('run', '--step', ...flags));
+      expect(process.exitCode).toBe(2);
+      expect(written(stderrSpy)).toContain(message);
+      expect(runMock).not.toHaveBeenCalled();
+      expect(watchMock).not.toHaveBeenCalled();
+    });
+
+    describe('--inspect', () => {
+      it('implies --step and --headed, and needs no terminal', async () => {
+        const ci = process.env.CI;
+        delete process.env.CI;
+        try {
+          await invoke('run', '--inspect');
+        } finally {
+          if (ci !== undefined) process.env.CI = ci;
+        }
+        expect(lastRunOptions()).toMatchObject({ step: true, inspect: true, headed: true });
+        expect(process.exitCode).not.toBe(2);
+      });
+
+      it('is refused in CI, exit code 2, without running', async () => {
+        const ci = process.env.CI;
+        process.env.CI = '1';
+        try {
+          await invoke('run', '--inspect');
+          expect(process.exitCode).toBe(2);
+          expect(written(stderrSpy)).toContain('--inspect waits for a person, so it is refused in CI');
+        } finally {
+          if (ci === undefined) delete process.env.CI;
+          else process.env.CI = ci;
+        }
+        expect(runMock).not.toHaveBeenCalled();
+      });
+
+      it.each([
+        [['--watch'], '--inspect cannot be combined with --watch'],
+        [['--reporter', 'list,json'], '--inspect cannot be combined with --reporter json'],
+        [['--workers', '2'], '--inspect runs on one worker'],
+      ])('is refused with %j, exit code 2, without running', async (flags, message) => {
+        const ci = process.env.CI;
+        delete process.env.CI;
+        try {
+          await invoke('run', '--inspect', ...flags);
+        } finally {
+          if (ci !== undefined) process.env.CI = ci;
+        }
+        expect(process.exitCode).toBe(2);
+        expect(written(stderrSpy)).toContain(message);
+        expect(runMock).not.toHaveBeenCalled();
+      });
+    });
+
+    it('accepts --workers 1', async () => {
+      await onTerminal(() => invoke('run', '--step', '--workers', '1'));
+      expect(lastRunOptions()).toMatchObject({ step: true, workers: 1 });
+    });
+  });
+
   it('rejects an invalid --tag-mode with exit code 2 and never runs', async () => {
     await invoke('run', '--tag-mode', 'sometimes');
     expect(runMock).not.toHaveBeenCalled();
@@ -656,6 +771,8 @@ describe('e2e --version and --help', () => {
       '--shard',
       '--pass-with-no-tests',
       '--headed',
+      '--step',
+      '--inspect',
       '--agent',
       '--workers',
       '--retries',

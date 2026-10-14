@@ -240,6 +240,114 @@ it, the run fails with `UNSUPPORTED_ARTIFACT` before any test starts.
 
 [Recording](/reference/config#recording) has every mode and file.
 
+## Step through a run
+
+`--step` runs the first step, which opens the browser, then holds each later
+step until you press a key. Each prompt names the step and the test line it
+came from:
+
+<CodeGroup>
+```bash npm
+npx e2e run tests/checkout.e2e.ts --step --headed
+```
+
+```bash pnpm
+pnpm exec e2e run tests/checkout.e2e.ts --step --headed
+```
+
+```bash bun
+bunx e2e run tests/checkout.e2e.ts --step --headed
+```
+</CodeGroup>
+
+```text
+ℹ step 1: app.open /  (tests/checkout.e2e.ts:5)  · runs now; later steps wait for a key
+ℹ step 2: expect.toBeVisible getByRole("heading", name: "Cart")  (tests/checkout.e2e.ts:6)
+  c runs it · t finishes this test · r runs the rest · q stops the run
+```
+
+| Key | Does |
+| --- | --- |
+| `c` | Runs the held step, then holds the next one. |
+| `t` | Runs the rest of this test, retries included, and holds again at the first step of the next test. |
+| `r` | Runs the rest of the run without stopping. |
+| `q`, Esc, Ctrl-C | Stops the run: the test ends as interrupted, the tests after it are skipped, and the exit code is 130. |
+
+It goes on like this to the end of the file, through every test in the run.
+Add `--headed` to watch each step land in the browser.
+
+The run goes one step at a time, so it differs from a normal run in a few
+ways:
+
+- It uses one worker, whatever `workers` says, and the test timeout is off
+  while you read. A step's own `actionTimeout` and `assertionTimeout` start
+  when you let it run. The run's `maxDuration` still applies.
+- Steps in `beforeEach` and `afterEach` hooks are held too. A setup test and
+  a retry run without stopping, since you have seen those steps already;
+  [`--inspect`](#inspect-a-run) can hold them. An agent step is
+  held once, at the call; its model turns run without stopping.
+- Keys pressed in the moment before a prompt appears, or while it has just
+  appeared, are ignored, so a stray key or a held `c` answers at most one
+  step you have seen.
+- A step's `startedAt` and duration leave out the wait, so
+  [video](#watch-it-happen) offsets still line up.
+- It needs a terminal. `--step` is refused with exit 2 in CI, when stdin or
+  stdout isn't a terminal, with `--watch`, with `--reporter json`, and with
+  `--workers` above 1.
+
+### Inspect a run
+
+`--inspect` does the same stepping from a page instead of the keyboard. It
+implies `--step` and `--headed`, and needs no terminal:
+
+<CodeGroup>
+```bash npm
+npx e2e run tests/checkout.e2e.ts --inspect
+```
+
+```bash pnpm
+pnpm exec e2e run tests/checkout.e2e.ts --inspect
+```
+
+```bash bun
+bunx e2e run tests/checkout.e2e.ts --inspect
+```
+</CodeGroup>
+
+The page shows the test file with a ✓ on the lines that ran and an arrow on
+the line about to run, and the current step and the test it belongs to.
+Next step, Finish test, Run the rest, and Stop do what `c`, `t`, `r`, and `q`
+do; the keys work on the page too. Like `--step`, the first step runs on its
+own.
+
+To see where you are in a long run, the header counts the tests (`Test 5 of
+11`, with how many passed and failed), and the steps below it are grouped by
+test. A finished test collapses to one line with its result, the current test
+is open, and a click opens any of them. Clicking a step shows its line in the
+file. A retry starts a `retry 1` group inside its test, and a step that ran
+without waiting says why: `first step`, `finishing test`, `setup`, or `retry`.
+
+With several targets, the run goes through them one after another, and each
+group in the list names its target (`[firefox] adds a todo`). Finish test
+applies to one test on one target.
+
+Setup tests and retries run without stopping by default. Tick Hold setup
+steps or Hold retries to stop at them too; the change applies to the steps
+that follow.
+
+With a local Chromium, the run opens the page in a window on the left half of
+the screen and the browser on the right half, so you read the line and watch
+it happen side by side. On a Wayland desktop it starts Chromium through
+XWayland to do this, since Wayland doesn't let a program choose where its
+window goes. When the window can't be opened, the run says so and prints the
+page's address, which you open yourself. Other engines print the address and
+leave the layout to you.
+
+The page is served on `127.0.0.1` only, under a random address that the run
+prints, and it checks the Host and Origin of every request. It reads the
+files the steps name and can do nothing but press the four keys and change which steps wait. It shows
+your test source as written, so don't keep secrets in it.
+
 ## Console output
 
 `console.log` and `console.error` in a test print while it runs, under a

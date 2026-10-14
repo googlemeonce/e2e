@@ -65,6 +65,10 @@ export interface WorkerBootstrap {
   /** See `TargetExecutorOptions.rerunDir`. */
   readonly rerunDir: string | undefined;
   readonly headed: boolean;
+  /** Whether each step waits for the runner's go-ahead (`--step`). */
+  readonly step: boolean;
+  /** The inspector's address (`--inspect`), for the engine to show beside its window. */
+  readonly inspectorUrl: string | undefined;
   readonly sessionsRoot: string;
   /** Per-run AES key; transferred only over this channel, never disk or env. */
   readonly sessionKeyBase64: string;
@@ -128,7 +132,19 @@ export interface PingMessage {
   readonly type: 'ping';
 }
 
-export type MainToWorker = RunUnitMessage | InterruptMessage | ShutdownMessage | TerminateMessage | PingMessage;
+/**
+ * The answer to a `step-gate`: let the step run, or stop the attempt at it.
+ * Sent once per `step-gate`, whatever the run does meanwhile, so a worker
+ * never waits on a runner that has moved on.
+ */
+export interface StepGoMessage {
+  readonly type: 'step-go';
+  /** The `step-gate` this answers. */
+  readonly id: number;
+  readonly go: boolean;
+}
+
+export type MainToWorker = RunUnitMessage | InterruptMessage | ShutdownMessage | TerminateMessage | PingMessage | StepGoMessage;
 
 export interface ReadyMessage {
   readonly type: 'ready';
@@ -220,6 +236,32 @@ export interface AttemptEndMessage {
 /** The answer to `ping`. */
 export interface PongMessage {
   readonly type: 'pong';
+}
+
+/** What the runner is told about a step held under `--step`, from the `step-gate` that asked. */
+export type StepGateRequest = Omit<StepGateMessage, 'type' | 'id'>;
+
+/**
+ * A step is about to run under `--step`: the worker holds it until the runner
+ * answers with a `step-go` carrying the same `id`, which is the person at the
+ * terminal letting it through. Only the runner owns the terminal.
+ */
+export interface StepGateMessage {
+  readonly type: 'step-gate';
+  readonly id: number;
+  readonly testId: string;
+  readonly agent: string;
+  readonly repeat: number;
+  /** The step's place in its attempt, from 0. */
+  readonly index: number;
+  /** Which attempt of the test this is, from 0; above 0 is a retry. */
+  readonly attempt: number;
+  /** Whether the test is a setup test, which signs in or prepares state for the others. */
+  readonly setup: boolean;
+  readonly api: string;
+  readonly label: string;
+  /** `tests/x.e2e.ts:LINE`, when the call site is known. */
+  readonly source?: string | undefined;
 }
 
 export interface ResultMessage {
@@ -323,6 +365,7 @@ export type WorkerToMain =
   | AttemptDeadlineMessage
   | AttemptEndMessage
   | PongMessage
+  | StepGateMessage
   | OutputMessage
   | NoticeMessage
   | ResultMessage
